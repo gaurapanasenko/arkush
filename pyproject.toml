@@ -1,0 +1,29 @@
+[project]
+name = "doc-detect"
+version = "0.1.0"
+description = "Document edge detection and perspective correction"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.12"
+dependencies = [
+    "opencv-python-headless>=4.9",
+    "numpy",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "pillow",
+]
+
+[project.scripts]
+doc-detect = "doc_detect:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "httpx2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
