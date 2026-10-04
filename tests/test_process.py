@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from doc_detect.process import (
+from arkush.process import (
     ProcessingCancelled,
     apply_filter,
     auto_levels,
@@ -51,7 +51,7 @@ def test_auto_levels_input_range_by_value():
 
 
 def test_fast_gaussian_matches_legacy_small_radius():
-    from doc_detect.process import _fast_gaussian, _gaussian_sigma
+    from arkush.process import _fast_gaussian, _gaussian_sigma
 
     img = np.random.randint(0, 256, (200, 200, 3), dtype=np.uint8).astype(np.float32)
     sigma = _gaussian_sigma(10)
@@ -61,7 +61,7 @@ def test_fast_gaussian_matches_legacy_small_radius():
 
 
 def test_fast_gaussian_downscales_in_one_step():
-    from doc_detect.process import _fast_gaussian, _gaussian_sigma
+    from arkush.process import _fast_gaussian, _gaussian_sigma
 
     img = np.random.randint(0, 256, (2000, 1500, 3), dtype=np.uint8).astype(np.float32)
     sigma = _gaussian_sigma(200)

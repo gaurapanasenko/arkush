@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 
-from doc_detect.detect import _order_corners, find_corners
+from arkush.detect import _order_corners, find_corners
 
 
 def test_order_corners():

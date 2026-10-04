@@ -1,5 +1,5 @@
 [project]
-name = "doc-detect"
+name = "arkush"
 version = "0.1.0"
 description = "Document edge detection and perspective correction"
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-doc-detect = "doc_detect:main"
+arkush = "arkush:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "httpx2"]

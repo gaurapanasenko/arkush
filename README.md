@@ -1,4 +1,4 @@
-# doc-detect
+# arkush
 
 Web app for scanning documents from photos. Detects document corners, lets you adjust them manually, applies optional image corrections, and exports a print-ready PNG at 300 DPI.
 
@@ -25,10 +25,10 @@ Web app for scanning documents from photos. Detects document corners, lets you a
 
 ```bash
 git clone <repo-url>
-cd doc-detect
+cd arkush
 uv sync
-uv run doc-detect
-uv run doc-detect --port 3000   # custom port
+uv run arkush
+uv run arkush --port 3000   # custom port
 ```
 
 Open http://127.0.0.1:8000 in your browser (or whichever port you set).
@@ -37,7 +37,7 @@ With pip instead of uv:
 
 ```bash
 pip install -e .
-doc-detect
+arkush
 ```
 
 ## Usage
@@ -86,7 +86,7 @@ doc-detect
 ## Project layout
 
 ```
-src/doc_detect/
+src/arkush/
   detect.py      # corner detection
   process.py     # warp, filters, export
   server.py      # FastAPI routes

@@ -7,7 +7,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from doc_detect.server import app
+from arkush.server import app
 
 client = TestClient(app)
 
@@ -29,7 +29,7 @@ def _detect():
 def test_index():
     res = client.get("/")
     assert res.status_code == 200
-    assert "Document Scanner" in res.text
+    assert "arkush" in res.text
 
 
 def test_detect_returns_corners_and_image():

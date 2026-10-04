@@ -16,8 +16,8 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from doc_detect.detect import corners_to_display, display_image, find_corners
-from doc_detect.process import (
+from arkush.detect import corners_to_display, display_image, find_corners
+from arkush.process import (
     ProcessingCancelled,
     downscale_for_preview,
     encode_image,
@@ -30,7 +30,7 @@ STATIC = Path(__file__).parent / "static"
 _cache: dict[str, dict] = {}
 _MAX_CACHED_RESULTS = 8
 
-app = FastAPI(title="doc-detect")
+app = FastAPI(title="arkush")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
