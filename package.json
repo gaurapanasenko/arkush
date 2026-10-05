@@ -1,0 +1,13 @@
+{
+  "name": "arkush",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "serve": "npx --yes serve src/arkush/static -p 8009"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
