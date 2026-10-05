@@ -125,13 +125,7 @@ function divideBg(img, blur, radius, gain) {
   gain = Math.max(1, Math.min(255, gain));
   const f = new cv.Mat();
   img.convertTo(f, cv.CV_32FC3);
-  const gray = new cv.Mat();
-  cv.cvtColor(img, gray, cv.COLOR_BGR2GRAY);
-  const grayF = new cv.Mat();
-  gray.convertTo(grayF, cv.CV_32F);
-  gray.delete();
-  const blurred = blurChannel(grayF, blur, radius);
-  grayF.delete();
+  const blurred = blurChannel(f, blur, radius);
   const out = new cv.Mat();
   out.create(img.rows, img.cols, cv.CV_8UC3);
   const fd = f.data32F;
@@ -139,8 +133,8 @@ function divideBg(img, blur, radius, gain) {
   const od = out.data;
   const n = img.rows * img.cols;
   for (let i = 0; i < n; i++) {
-    const b = bd[i] + 1.0;
     for (let c = 0; c < 3; c++) {
+      const b = bd[i * 3 + c] + 1.0;
       const v = (fd[i * 3 + c] / b) * gain;
       od[i * 3 + c] = Math.max(0, Math.min(255, v));
     }

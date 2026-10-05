@@ -320,9 +320,10 @@ function onCornerDrag(e) {
   );
   const origW = sourceBitmap.width / displayScale;
   const origH = sourceBitmap.height / displayScale;
+  const pad = edgePadding / displayScale;
   corners[dragging] = [
-    Math.max(0, Math.min(ox, origW)),
-    Math.max(0, Math.min(oy, origH)),
+    Math.max(-pad, Math.min(ox, origW + pad)),
+    Math.max(-pad, Math.min(oy, origH + pad)),
   ];
   drawSource();
   const disp = toDisplayCorners();

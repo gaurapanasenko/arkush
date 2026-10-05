@@ -17,4 +17,11 @@ describe("coords", () => {
   it("converts edge padding to original pixels", () => {
     expect(paddingInOriginal(50, 0.5)).toBe(100);
   });
+
+  it("roundtrips corners placed in the padding band", () => {
+    const scale = 0.5;
+    const pad = 20;
+    const orig = [-10, -5];
+    expect(fromDisplayCorner(...toDisplayCorner(...orig, scale, pad), scale, pad)).toEqual(orig);
+  });
 });
