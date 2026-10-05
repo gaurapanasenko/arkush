@@ -196,8 +196,26 @@
             <select id="format">
               <option value="a4">A4 (210 × 297 mm)</option>
               <option value="letter">Letter (8.5 × 11 in)</option>
+              <option value="custom">Custom</option>
               <option value="none">No crop</option>
             </select>
+            <div id="custom-format" class="filter-params hidden" style="margin-top:0.5rem">
+              <label>Width
+                <input type="number" id="custom-w" min="0.1" step="0.1" value="210"
+                  style="width:100%;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid #555;background:#333;color:#eee;font-size:0.85rem">
+              </label>
+              <label>Height
+                <input type="number" id="custom-h" min="0.1" step="0.1" value="297"
+                  style="width:100%;padding:0.3rem 0.5rem;border-radius:6px;border:1px solid #555;background:#333;color:#eee;font-size:0.85rem">
+              </label>
+              <label>Unit
+                <select id="custom-unit">
+                  <option value="mm" selected>mm</option>
+                  <option value="in">in</option>
+                </select>
+              </label>
+              <button type="button" id="custom-apply" style="width:100%;margin-top:0.35rem">Apply</button>
+            </div>
           </section>
           <section>
             <h3>Filters</h3>
@@ -205,6 +223,7 @@
             <div class="add-btns">
               <button id="add-auto-levels">+ Auto Levels</button>
               <button id="add-divide-bg">+ Remove Background</button>
+              <button id="add-blur">+ Blur</button>
               <button id="add-unsharp">+ Unsharp</button>
               <button id="add-grayscale">+ Grayscale</button>
               <button id="add-quantize">+ Quantize Colors</button>
@@ -712,6 +731,7 @@ let dragFilterId = null;
 const FILTER_NAMES = {
   auto_levels: "Auto Levels",
   divide_bg: "Remove Background",
+  blur: "Blur",
   unsharp: "Unsharp",
   grayscale: "Grayscale",
   quantize: "Quantize Colors",
@@ -722,6 +742,7 @@ function addFilter(type) {
   switch (type) {
     case "auto_levels": filters.push({ id, type, low: 0, high: 255 }); break;
     case "divide_bg": filters.push({ id, type, blur: "gaussian", radius: 30, gain: 255 }); break;
+    case "blur": filters.push({ id, type, blur: "gaussian", radius: 5 }); break;
     case "unsharp": filters.push({ id, type, radius: 2, amount: 100 }); break;
     case "grayscale": filters.push({ id, type }); break;
     case "quantize": filters.push({ id, type, colors: 16 }); break;
@@ -870,6 +891,35 @@ function renderFilterStack() {
       card.appendChild(params);
     }
 
+    if (f.type === "blur") {
+      const params = document.createElement("div");
+      params.className = "filter-params";
+      const blurLbl = document.createElement("label");
+      blurLbl.textContent = "Blur";
+      const blurSel = document.createElement("select");
+      blurSel.innerHTML = '<option value="gaussian">Gaussian</option><option value="median">Median</option>';
+      blurSel.value = f.blur;
+      blurSel.addEventListener("change", () => { f.blur = blurSel.value; schedulePreview(); });
+      blurLbl.appendChild(blurSel);
+      const radLbl = document.createElement("label");
+      const radTop = document.createElement("span");
+      radTop.innerHTML = 'Radius <span class="radius-val">' + f.radius + "</span>";
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = 1;
+      slider.max = 450;
+      slider.step = 1;
+      slider.value = f.radius;
+      slider.addEventListener("input", () => {
+        f.radius = +slider.value;
+        radTop.querySelector(".radius-val").textContent = f.radius;
+        schedulePreview();
+      });
+      radLbl.append(radTop, slider);
+      params.append(blurLbl, radLbl);
+      card.appendChild(params);
+    }
+
     if (f.type === "unsharp") {
       const params = document.createElement("div");
       params.className = "filter-params";
@@ -962,6 +1012,7 @@ function renderFilterStack() {
 
 $("add-auto-levels").addEventListener("click", () => addFilter("auto_levels"));
 $("add-divide-bg").addEventListener("click", () => addFilter("divide_bg"));
+$("add-blur").addEventListener("click", () => addFilter("blur"));
 $("add-unsharp").addEventListener("click", () => addFilter("unsharp"));
 $("add-grayscale").addEventListener("click", () => addFilter("grayscale"));
 $("add-quantize").addEventListener("click", () => addFilter("quantize"));
@@ -1012,14 +1063,47 @@ function cancelOperation() {
 
 document.querySelectorAll(".cancel-op").forEach(b => b.addEventListener("click", cancelOperation));
 
+let appliedCustom = { width: 210, height: 297, unit: "mm" };
+
+function readCustomInputs() {
+  return {
+    width: +$("custom-w").value,
+    height: +$("custom-h").value,
+    unit: $("custom-unit").value,
+  };
+}
+
+function customInputsValid(c = readCustomInputs()) {
+  return (c.unit === "mm" || c.unit === "in")
+    && Number.isFinite(c.width) && c.width > 0 && c.width <= 1000
+    && Number.isFinite(c.height) && c.height > 0 && c.height <= 1000;
+}
+
+function updateCustomApplyBtn() {
+  $("custom-apply").disabled = !customInputsValid();
+}
+
+function applyCustomFormat() {
+  const c = readCustomInputs();
+  if (!customInputsValid(c)) return;
+  appliedCustom = c;
+  schedulePreview();
+}
+
 function getBaseParams() {
   const pad = Math.round(edgePadding / displayScale);
-  return {
+  const params = {
     image_id: imageId,
     corners: corners.map(([x, y]) => [x - edgePadding, y - edgePadding]),
     format: $("format").value,
     padding: pad,
   };
+  if ($("format").value === "custom") {
+    params.custom_width = appliedCustom.width;
+    params.custom_height = appliedCustom.height;
+    params.custom_unit = appliedCustom.unit;
+  }
+  return params;
 }
 
 function getParams() {
@@ -1107,7 +1191,22 @@ async function doProcess() {
 
 $("apply-btn").addEventListener("click", () => { clearTimeout(previewTimer); doProcess(); });
 $("preview-mode").addEventListener("change", schedulePreview);
-$("format").addEventListener("change", schedulePreview);
+function updateFormatUI() {
+  $("custom-format").classList.toggle("hidden", $("format").value !== "custom");
+  updateCustomApplyBtn();
+}
+
+$("format").addEventListener("change", () => {
+  updateFormatUI();
+  if ($("format").value !== "custom") schedulePreview();
+});
+$("custom-apply").addEventListener("click", applyCustomFormat);
+["custom-w", "custom-h", "custom-unit"].forEach(id => {
+  $(id).addEventListener("input", updateCustomApplyBtn);
+  $(id).addEventListener("change", updateCustomApplyBtn);
+});
+$("custom-unit").value = appliedCustom.unit;
+updateFormatUI();
 
 $("download-btn").addEventListener("click", async () => {
   if (!imageId) return;

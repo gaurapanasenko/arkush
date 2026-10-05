@@ -8,14 +8,17 @@ import pytest
 from PIL import Image
 
 from arkush.process import (
+    DPI,
     ProcessingCancelled,
     apply_filter,
     auto_levels,
+    blur_img,
     detect_auto_levels,
     divide_bg,
     downscale_for_preview,
     edge_pad,
     encode_image,
+    format_size,
     process,
     quantize,
     to_grayscale,
@@ -112,6 +115,14 @@ def test_divide_bg_gain():
     assert high > low
 
 
+def test_blur_filter_smooths():
+    img = np.zeros((50, 50, 3), np.uint8)
+    img[20:30, 20:30] = 255
+    out = blur_img(img, radius=5)
+    assert out.shape == img.shape
+    assert out[25, 15].mean() > 0
+
+
 def test_unsharp_changes_image(sample_bgr):
     out = unsharp(sample_bgr, radius=2, amount=150)
     assert out.shape == sample_bgr.shape
@@ -183,6 +194,17 @@ def test_encode_png_rgb_grayscale_indexed(sample_bgr):
         else:
             assert pil.mode == "RGB"
         assert abs(pil.info["dpi"][0] - 300) < 0.01
+
+
+def test_format_size_custom_mm_and_in():
+    assert format_size("custom", 210, 297, "mm") == (int(210 / 25.4 * DPI), int(297 / 25.4 * DPI))
+    assert format_size("custom", 8.5, 11, "in") == (int(8.5 * DPI), int(11 * DPI))
+    assert format_size("none") is None
+
+
+def test_process_custom_format(sample_bgr, sample_corners):
+    out = process(sample_bgr, sample_corners, "custom", [], custom_width=100, custom_height=50, custom_unit="mm")
+    assert out.shape[:2] == (int(50 / 25.4 * DPI), int(100 / 25.4 * DPI))
 
 
 def test_encode_jpeg(sample_bgr):

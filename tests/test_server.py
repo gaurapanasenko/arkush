@@ -152,6 +152,42 @@ def test_export_uses_processed_cache():
     assert export.status_code == 200
 
 
+def test_process_custom_format():
+    det = _detect()
+    body = {
+        "image_id": det["image_id"],
+        "corners": det["corners"],
+        "format": "custom",
+        "custom_width": 100,
+        "custom_height": 150,
+        "custom_unit": "mm",
+        "preview_mode": "full",
+        "filters": [],
+    }
+    res = client.post("/process", json=body)
+    assert res.status_code == 200
+
+
+def test_memory_budget_evicts_old_sessions(monkeypatch):
+    import arkush.server as srv
+
+    monkeypatch.setattr(srv, "_MEM_BUDGET", 400_000)
+    srv._cache.clear()
+    det1 = _detect()
+    det2 = _detect()
+    assert det2["image_id"] in srv._cache
+    assert det1["image_id"] not in srv._cache
+
+
+def test_memory_budget_rejects_huge_image(monkeypatch):
+    import arkush.server as srv
+
+    monkeypatch.setattr(srv, "_MEM_BUDGET", 1024)
+    srv._cache.clear()
+    res = client.post("/detect", files={"file": ("doc.png", _make_test_png(), "image/png")})
+    assert res.status_code == 413
+
+
 def test_export_invalid_filter_radius():
     det = _detect()
     res = client.post(

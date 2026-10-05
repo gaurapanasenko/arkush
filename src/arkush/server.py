@@ -4,7 +4,9 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import uuid
+from collections import OrderedDict
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -18,13 +20,13 @@ from pydantic import BaseModel, Field
 
 from arkush.detect import corners_to_display, display_image, find_corners
 from arkush.process import (
-    FORMATS,
     ProcessingCancelled,
     apply_filter,
     detect_auto_levels,
     downscale_for_preview,
     edge_pad,
     encode_image,
+    format_size,
     process,
     warp,
 )
@@ -32,15 +34,66 @@ from arkush.process import (
 STATIC = Path(__file__).parent / "static"
 
 # ponytail: in-memory per image_id — original + processed results for the session
-_cache: dict[str, dict] = {}
-_MAX_CACHED_RESULTS = 8
+_cache: OrderedDict[str, dict] = OrderedDict()
+_VALID_FORMATS = ("a4", "letter", "none", "custom")
+
+
+def _total_ram() -> int:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, AttributeError, OSError):
+        return 2 * 1024**3
+
+
+_MEM_BUDGET = _total_ram() // 2
+
+
+def _nbytes(img: np.ndarray) -> int:
+    return int(img.nbytes)
+
+
+def _entry_bytes(entry: dict) -> int:
+    total = _nbytes(entry["original"])
+    for img in entry.get("processed", {}).values():
+        total += _nbytes(img)
+    return total
+
+
+def _cache_bytes() -> int:
+    return sum(_entry_bytes(entry) for entry in _cache.values())
+
+
+def _evict_to_fit(extra: int = 0, protect: set[str] | None = None) -> None:
+    protect = protect or set()
+    while _cache_bytes() + extra > _MEM_BUDGET:
+        for entry in _cache.values():
+            proc = entry.get("processed")
+            if proc:
+                proc.popitem(last=False)
+                break
+        else:
+            dropped = False
+            for image_id in list(_cache):
+                if image_id not in protect:
+                    del _cache[image_id]
+                    dropped = True
+                    break
+            if not dropped:
+                break
+
+
+def _cache_get(image_id: str) -> dict | None:
+    entry = _cache.get(image_id)
+    if entry is not None:
+        _cache.move_to_end(image_id)
+    return entry
 
 app = FastAPI(title="arkush")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 class Filter(BaseModel):
-    type: Literal["auto_levels", "divide_bg", "unsharp", "grayscale", "quantize"]
+    type: Literal["auto_levels", "divide_bg", "blur", "unsharp", "grayscale", "quantize"]
     blur: Literal["gaussian", "median"] = "gaussian"
     radius: int = Field(default=30, ge=1, le=450)
     gain: int = Field(default=255, ge=1, le=255)
@@ -54,6 +107,9 @@ class ProcessRequest(BaseModel):
     image_id: str
     corners: list[list[float]]
     format: str = "a4"
+    custom_width: float = Field(default=210, gt=0, le=1000)
+    custom_height: float = Field(default=297, gt=0, le=1000)
+    custom_unit: Literal["in", "mm"] = "mm"
     filters: list[Filter] = []
     preview_mode: Literal["none", "fast", "full"] = "fast"
     padding: int = Field(default=0, ge=0)
@@ -63,6 +119,9 @@ class DetectLevelsRequest(BaseModel):
     image_id: str
     corners: list[list[float]]
     format: str = "a4"
+    custom_width: float = Field(default=210, gt=0, le=1000)
+    custom_height: float = Field(default=297, gt=0, le=1000)
+    custom_unit: Literal["in", "mm"] = "mm"
     filters: list[Filter] = []
     padding: int = Field(default=0, ge=0)
 
@@ -81,6 +140,8 @@ def _filter_dict(f: Filter) -> dict:
             return {"type": "auto_levels", "low": f.low, "high": f.high}
         case "divide_bg":
             return {"type": "divide_bg", "blur": f.blur, "radius": f.radius, "gain": f.gain}
+        case "blur":
+            return {"type": "blur", "blur": f.blur, "radius": f.radius}
         case "unsharp":
             return {"type": "unsharp", "radius": f.radius, "amount": f.amount}
         case "grayscale":
@@ -91,16 +152,40 @@ def _filter_dict(f: Filter) -> dict:
             return {}
 
 
-def _process_key(corners: np.ndarray, fmt: str, filters: list[dict], padding: int) -> str:
-    payload = json.dumps({"c": corners.tolist(), "f": fmt, "filters": filters, "p": padding}, sort_keys=True)
+def _process_key(
+    corners: np.ndarray,
+    fmt: str,
+    filters: list[dict],
+    padding: int,
+    custom_width: float = 210,
+    custom_height: float = 297,
+    custom_unit: str = "mm",
+) -> str:
+    payload = json.dumps(
+        {
+            "c": corners.tolist(),
+            "f": fmt,
+            "filters": filters,
+            "p": padding,
+            "cw": custom_width if fmt == "custom" else None,
+            "ch": custom_height if fmt == "custom" else None,
+            "cu": custom_unit if fmt == "custom" else None,
+        },
+        sort_keys=True,
+    )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-def _store_processed(entry: dict, key: str, img: np.ndarray) -> None:
-    processed = entry.setdefault("processed", {})
+def _fmt(req: ProcessRequest) -> str:
+    return req.format if req.format in _VALID_FORMATS else "a4"
+
+
+def _store_processed(image_id: str, entry: dict, key: str, img: np.ndarray) -> None:
+    processed: OrderedDict[str, np.ndarray] = entry.setdefault("processed", OrderedDict())
+    processed.pop(key, None)
+    extra = _nbytes(img)
+    _evict_to_fit(extra=extra, protect={image_id})
     processed[key] = img
-    while len(processed) > _MAX_CACHED_RESULTS:
-        del processed[next(iter(processed))]
 
 
 def _b64_png(img: np.ndarray) -> str:
@@ -139,6 +224,9 @@ async def _run_process(
     fmt: str,
     filters: list[dict],
     padding: int,
+    custom_width: float = 210,
+    custom_height: float = 297,
+    custom_unit: str = "mm",
 ) -> np.ndarray:
     cancelled = {"v": False}
 
@@ -162,6 +250,9 @@ async def _run_process(
                 filters,
                 padding,
                 cancelled=lambda: cancelled["v"],
+                custom_width=custom_width,
+                custom_height=custom_height,
+                custom_unit=custom_unit,
             ),
         )
     except ProcessingCancelled:
@@ -177,13 +268,18 @@ async def _get_full_result(
     fmt: str,
     filters: list[dict],
     padding: int,
+    custom_width: float = 210,
+    custom_height: float = 297,
+    custom_unit: str = "mm",
 ) -> tuple[np.ndarray, bool]:
-    key = _process_key(corners, fmt, filters, padding)
+    key = _process_key(corners, fmt, filters, padding, custom_width, custom_height, custom_unit)
     cached = entry.get("processed", {}).get(key)
     if cached is not None:
         return cached, True
-    result = await _run_process(request, entry["original"], corners, fmt, filters, padding)
-    _store_processed(entry, key, result)
+    result = await _run_process(
+        request, entry["original"], corners, fmt, filters, padding, custom_width, custom_height, custom_unit
+    )
+    _store_processed(entry["image_id"], entry, key, result)
     return result, False
 
 
@@ -195,10 +291,15 @@ async def index():
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
     img = _decode_upload(await file.read())
+    extra = _nbytes(img)
+    if extra > _MEM_BUDGET:
+        raise HTTPException(413, "Image too large")
+    _evict_to_fit(extra=extra)
     corners, scale = find_corners(img)
     disp = display_image(img, scale)
     image_id = str(uuid.uuid4())
-    _cache[image_id] = {"original": img, "scale": scale, "processed": {}}
+    _cache[image_id] = {"image_id": image_id, "original": img, "scale": scale, "processed": OrderedDict()}
+    _cache.move_to_end(image_id)
     return {
         "image_id": image_id,
         "corners": corners_to_display(corners, scale),
@@ -211,19 +312,19 @@ async def detect(file: UploadFile = File(...)):
 
 @app.post("/detect-levels")
 async def detect_levels(req: DetectLevelsRequest):
-    entry = _cache.get(req.image_id)
+    entry = _cache_get(req.image_id)
     if entry is None:
         raise HTTPException(404, "Image not found, re-upload")
 
     corners = _scaled_corners(entry, np.array(req.corners, dtype=np.float32))
-    fmt = req.format if req.format in ("a4", "letter", "none") else "a4"
+    fmt = _fmt(req)
     padding = _clamp_padding(entry, req.padding)
     img = entry["original"]
     if padding > 0:
         img = edge_pad(img, padding)
         corners = corners + padding
 
-    img = warp(img, corners, FORMATS.get(fmt))
+    img = warp(img, corners, format_size(fmt, req.custom_width, req.custom_height, req.custom_unit))
     for filt in [_filter_dict(f) for f in req.filters]:
         img = apply_filter(img, filt)
 
@@ -233,32 +334,36 @@ async def detect_levels(req: DetectLevelsRequest):
 
 @app.post("/process")
 async def process_image(req: ProcessRequest, request: Request):
-    entry = _cache.get(req.image_id)
+    entry = _cache_get(req.image_id)
     if entry is None:
         raise HTTPException(404, "Image not found, re-upload")
 
     corners = _scaled_corners(entry, np.array(req.corners, dtype=np.float32))
-    fmt = req.format if req.format in ("a4", "letter", "none") else "a4"
+    fmt = _fmt(req)
     filters = [_filter_dict(f) for f in req.filters]
     padding = _clamp_padding(entry, req.padding)
 
-    full, from_cache = await _get_full_result(request, entry, corners, fmt, filters, padding)
+    full, from_cache = await _get_full_result(
+        request, entry, corners, fmt, filters, padding, req.custom_width, req.custom_height, req.custom_unit
+    )
     result = downscale_for_preview(full) if req.preview_mode == "fast" else full
     return {"image": _b64_png(result), "cached": from_cache}
 
 
 @app.post("/export")
 async def export_image(req: ExportRequest, request: Request):
-    entry = _cache.get(req.image_id)
+    entry = _cache_get(req.image_id)
     if entry is None:
         raise HTTPException(404, "Image not found, re-upload")
 
     corners = _scaled_corners(entry, np.array(req.corners, dtype=np.float32))
-    fmt = req.format if req.format in ("a4", "letter", "none") else "a4"
+    fmt = _fmt(req)
     filters = [_filter_dict(f) for f in req.filters]
     padding = _clamp_padding(entry, req.padding)
 
-    result, _ = await _get_full_result(request, entry, corners, fmt, filters, padding)
+    result, _ = await _get_full_result(
+        request, entry, corners, fmt, filters, padding, req.custom_width, req.custom_height, req.custom_unit
+    )
     data, media_type, filename = encode_image(
         result,
         fmt,

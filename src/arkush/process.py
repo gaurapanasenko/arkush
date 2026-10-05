@@ -17,6 +17,23 @@ FORMATS = {
 }
 
 
+def _to_px(size: float, unit: str) -> int:
+    return int(size * DPI) if unit == "in" else int(size / 25.4 * DPI)
+
+
+def format_size(
+    fmt: str,
+    width: float | None = None,
+    height: float | None = None,
+    unit: str = "mm",
+) -> tuple[int, int] | None:
+    if fmt == "none":
+        return None
+    if fmt == "custom" and width and height:
+        return (_to_px(width, unit), _to_px(height, unit))
+    return FORMATS.get(fmt)
+
+
 class ProcessingCancelled(Exception):
     pass
 
@@ -84,9 +101,16 @@ def divide_bg(
     radius = max(1, min(450, radius))
     gain = max(1, min(255, gain))
     f = img.astype(np.float32)
-    blurred = _blur(f, blur, radius)
-    result = (f / np.maximum(blurred, EPS)) * gain
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    blurred = _blur(gray, blur, radius)[:, :, np.newaxis]
+    result = (f / (blurred + 1.0)) * gain
     return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def blur_img(img: np.ndarray, blur: str = "gaussian", radius: int = 5) -> np.ndarray:
+    radius = max(1, min(450, radius))
+    out = _blur(img.astype(np.float32), blur, radius)
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def unsharp(img: np.ndarray, radius: int = 2, amount: int = 100) -> np.ndarray:
@@ -121,6 +145,8 @@ def apply_filter(img: np.ndarray, filt: dict[str, Any]) -> np.ndarray:
                 filt.get("radius", 30),
                 filt.get("gain", 255),
             )
+        case "blur":
+            return blur_img(img, filt.get("blur", "gaussian"), filt.get("radius", 5))
         case "unsharp":
             return unsharp(img, filt.get("radius", 2), filt.get("amount", 100))
         case "grayscale":
@@ -172,6 +198,9 @@ def process(
     filters: list[dict[str, Any]],
     padding: int = 0,
     cancelled: Callable[[], bool] | None = None,
+    custom_width: float | None = None,
+    custom_height: float | None = None,
+    custom_unit: str = "mm",
 ) -> np.ndarray:
     if cancelled and cancelled():
         raise ProcessingCancelled()
@@ -180,7 +209,7 @@ def process(
         img = edge_pad(img, padding)
         corners = np.asarray(corners, dtype=np.float32) + padding
 
-    out_size = FORMATS.get(fmt)
+    out_size = format_size(fmt, custom_width, custom_height, custom_unit)
     result = warp(img, corners, out_size)
 
     for filt in filters:
