@@ -32,6 +32,15 @@ function clampPadding(padding) {
   return Math.max(0, Math.min(padding | 0, max));
 }
 
+async function loadPreview(corners, scale) {
+  const disp = displayImage(original, scale);
+  const preview = matToImageBitmap(disp);
+  const width = disp.cols;
+  const height = disp.rows;
+  disp.delete();
+  return { corners, scale, width, height, preview };
+}
+
 async function handleDetect(msg) {
   try {
     const mat = await bufferToMat(msg.buffer);
@@ -43,14 +52,32 @@ async function handleDetect(msg) {
     }
     storeOriginal(mat);
     const { corners, scale } = findCorners(original);
-    const disp = displayImage(original, scale);
-    const preview = matToImageBitmap(disp);
-    const width = disp.cols;
-    const height = disp.rows;
-    disp.delete();
+    const out = await loadPreview(corners, scale);
     self.postMessage(
-      { type: "detected", id: msg.id, corners, scale, width, height, preview },
-      [preview],
+      { type: "detected", id: msg.id, ...out },
+      [out.preview],
+    );
+  } catch (e) {
+    self.postMessage({ type: "error", id: msg.id, message: e.message || "Invalid image" });
+  }
+}
+
+async function handleRestore(msg) {
+  try {
+    const mat = await bufferToMat(msg.buffer);
+    const extra = matNbytes(mat);
+    if (extra > memBudget) {
+      mat.delete();
+      self.postMessage({ type: "error", id: msg.id, message: "Image too large" });
+      return;
+    }
+    storeOriginal(mat);
+    const scale = msg.scale ?? 1;
+    const corners = msg.corners;
+    const out = await loadPreview(corners, scale);
+    self.postMessage(
+      { type: "restored", id: msg.id, ...out },
+      [out.preview],
     );
   } catch (e) {
     self.postMessage({ type: "error", id: msg.id, message: e.message || "Invalid image" });
@@ -223,6 +250,11 @@ function onMessage(msg) {
     case "detect":
       handleDetect(msg).catch(e => {
         self.postMessage({ type: "error", id: msg.id, message: e.message || "Detection failed" });
+      });
+      break;
+    case "restore":
+      handleRestore(msg).catch(e => {
+        self.postMessage({ type: "error", id: msg.id, message: e.message || "Restore failed" });
       });
       break;
     case "process":

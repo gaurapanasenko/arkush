@@ -1,16 +1,37 @@
 import {
   waitForReady,
   detectImage,
+  restoreImage,
   processImage,
   detectLevels,
   exportImage,
   cancelWorker,
+  clearWorker,
 } from "./worker-client.js";
 import {
   fromDisplayCorner as origFromDisplay,
   paddingInOriginal,
   toDisplayCorner,
 } from "./pure/coords.js";
+import {
+  documentPatchFromUI,
+  filtersWithIds,
+  newDocumentMeta,
+} from "./pure/session-state.js";
+import {
+  clearAll,
+  createDocument,
+  deleteDocument,
+  getAppState,
+  getDocument,
+  listDocuments,
+  openDB,
+  setActiveDocument,
+  touchDocument,
+  updateDocument,
+} from "./persist.js";
+import { renderSavedScans, thumbBufferFromPreview } from "./persist-ui.js";
+import { plog, plogError, plogWarn } from "./persist-log.js";
 
 const $ = id => document.getElementById(id);
 const sourceCanvas = $("source-canvas");
@@ -28,6 +49,10 @@ let edgePadding = 0;
 let corners = [];
 let dragging = -1;
 let currentStep = 1;
+let activeDocumentId = null;
+let persistEnabled = true;
+let persistSuspended = false;
+let saveTimer = null;
 
 const HANDLE_R = 16;
 const LINE_W = 4;
@@ -55,6 +80,7 @@ function toDisplayCorners() {
 }
 
 function setStep(n) {
+  plog("setStep", { from: currentStep, to: n });
   disableMag();
   currentStep = n;
   for (let i = 1; i <= 3; i++) {
@@ -63,15 +89,278 @@ function setStep(n) {
     ind.classList.toggle("active", i === n);
     ind.classList.toggle("done", i < n);
   }
+  $("header-home").classList.toggle("hidden", n === 1);
+  scheduleDocumentSave();
 }
 
 const dropZone = $("drop-zone");
 const fileInput = $("file-input");
 const loadingOverlay = $("loading-overlay");
+const savedScansRoot = $("saved-scans");
+const savedScansStrip = $("saved-scans-strip");
 
-waitForReady().then(() => {
+function collectUIState() {
+  return {
+    corners,
+    displayScale,
+    edgePadding,
+    currentStep,
+    filterIdSeq,
+    filters,
+    format: $("format").value,
+    appliedCustom,
+    customInputs: readCustomInputs(),
+    exportFilename: $("export-filename").value,
+    exportFormat: $("export-format").value,
+    pngMode: $("png-mode").value,
+    pngCompress: +$("png-compress").value,
+    pngColors: +$("png-colors").value,
+    jpegQuality: +$("jpeg-quality").value,
+    previewMode: $("preview-mode").value,
+  };
+}
+
+function resetUIToDefaults(exportName) {
+  filters = [];
+  filterIdSeq = 0;
+  appliedCustom = { width: 210, height: 297, unit: "mm" };
+  $("format").value = "a4";
+  $("custom-w").value = 210;
+  $("custom-h").value = 297;
+  $("custom-unit").value = "mm";
+  $("export-filename").value = exportName;
+  $("export-filename").disabled = false;
+  $("export-format").value = "jpeg";
+  $("png-mode").value = "rgb";
+  $("png-compress").value = 9;
+  $("png-compress-val").textContent = "9";
+  $("png-colors").value = 256;
+  $("png-colors-val").textContent = "256";
+  $("jpeg-quality").value = 65;
+  $("jpeg-quality-val").textContent = "65";
+  $("preview-mode").value = "fast";
+  updateFormatUI();
+  updateExportUI();
+  renderFilterStack();
+}
+
+function applyDocumentSettings(doc) {
+  edgePadding = doc.edgePadding || 0;
+  $("edge-pad").value = edgePadding;
+  $("edge-pad-val").textContent = String(edgePadding);
+  $("edge-pad").max = maxEdgePadding();
+
+  const restored = filtersWithIds(doc.filters, doc.filterIdSeq);
+  filters = restored.filters;
+  filterIdSeq = restored.filterIdSeq;
+  renderFilterStack();
+
+  $("format").value = doc.format || "a4";
+  appliedCustom = { ...doc.appliedCustom };
+  $("custom-w").value = doc.customInputs?.width ?? appliedCustom.width;
+  $("custom-h").value = doc.customInputs?.height ?? appliedCustom.height;
+  $("custom-unit").value = doc.customInputs?.unit ?? appliedCustom.unit;
+  updateFormatUI();
+
+  $("export-filename").value = doc.exportFilename || "scan";
+  $("export-filename").disabled = false;
+  $("export-format").value = doc.exportFormat || "jpeg";
+  $("png-mode").value = doc.pngMode || "rgb";
+  $("png-compress").value = doc.pngCompress ?? 9;
+  $("png-compress-val").textContent = String($("png-compress").value);
+  $("png-colors").value = doc.pngColors ?? 256;
+  $("png-colors-val").textContent = String($("png-colors").value);
+  $("jpeg-quality").value = doc.jpegQuality ?? 65;
+  $("jpeg-quality-val").textContent = String($("jpeg-quality").value);
+  updateExportUI();
+  $("preview-mode").value = doc.previewMode || "fast";
+  drawSource();
+}
+
+function normalizeCorners(raw) {
+  return (raw || []).map(c => [+c[0], +c[1]]);
+}
+
+function goToDocumentStep(doc) {
+  const step = Math.max(2, doc.lastStep || 2);
+  plog("goToDocumentStep", { docId: doc.id, lastStep: doc.lastStep, step, previewMode: doc.previewMode });
+  setStep(step);
+  if (step === 3 && doc.previewMode !== "none") doProcess();
+}
+
+function loadImageData(data, { resetPadding = true } = {}) {
+  if (sourceBitmap) sourceBitmap.close();
+  imageLoaded = true;
+  displayScale = data.scale ?? 1;
+  corners = normalizeCorners(data.corners);
+  sourceBitmap = data.preview;
+  if (resetPadding) {
+    edgePadding = 0;
+    $("edge-pad").value = 0;
+    $("edge-pad-val").textContent = "0";
+  }
+  $("edge-pad").max = maxEdgePadding();
+  drawSource();
+}
+
+async function saveActiveDocument() {
+  if (!persistEnabled || persistSuspended || !activeDocumentId || !imageLoaded) {
+    plog("saveActiveDocument skipped", {
+      persistEnabled, persistSuspended, activeDocumentId, imageLoaded,
+    });
+    return;
+  }
+  try {
+    const patch = documentPatchFromUI(collectUIState());
+    plog("saveActiveDocument", { id: activeDocumentId, lastStep: patch.lastStep, currentStep });
+    await updateDocument(activeDocumentId, patch);
+  } catch (e) {
+    plogError("saveActiveDocument failed", e);
+    if (e.name === "QuotaExceededError") alert("Could not save settings locally.");
+  }
+}
+
+function scheduleDocumentSave() {
+  if (!persistEnabled || persistSuspended || !activeDocumentId) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveActiveDocument, 400);
+}
+
+async function refreshSavedScans() {
+  if (!persistEnabled) return;
+  const docs = await listDocuments();
+  await renderSavedScans(savedScansRoot, savedScansStrip, docs, activeDocumentId, {
+    onOpen: id => openDocument(id),
+    onDelete: id => removeSavedDocument(id),
+  });
+}
+
+function resetViewer() {
+  cancelOperation();
+  clearWorker();
+  if (sourceBitmap) { sourceBitmap.close(); sourceBitmap = null; }
+  if (resultImg?.close) resultImg.close();
+  resultImg = null;
+  imageLoaded = false;
+  corners = [];
+  filters = [];
+  filterIdSeq = 0;
+  activeDocumentId = null;
+  renderFilterStack();
+  setStep(1);
+}
+
+async function openDocument(id, { touch = true, force = false } = {}) {
+  plog("openDocument start", {
+    id, touch, force, activeDocumentId, imageLoaded, currentStep, persistSuspended,
+  });
+  if (persistSuspended && !force) {
+    plogWarn("openDocument blocked by persistSuspended");
+    return;
+  }
+
+  if (id === activeDocumentId && imageLoaded) {
+    plog("openDocument fast path", { id });
+    await saveActiveDocument();
+    if (touch) await touchDocument(id);
+    const doc = await getDocument(id);
+    plog("openDocument fast path loaded doc", { id, lastStep: doc?.lastStep });
+    await refreshSavedScans();
+    if (doc) goToDocumentStep(doc);
+    return;
+  }
+
+  if (activeDocumentId && activeDocumentId !== id) await saveActiveDocument();
+  cancelOperation();
+  persistSuspended = true;
+  let opened = null;
+  try {
+    const doc = await getDocument(id);
+    plog("openDocument restore", {
+      id,
+      hasImage: !!doc?.imageBuffer,
+      imageBytes: doc?.imageBuffer?.byteLength ?? 0,
+      lastStep: doc?.lastStep,
+    });
+    if (!doc?.imageBuffer) throw new Error("missing image");
+    await waitForReady();
+    const data = await restoreImage(
+      doc.imageBuffer,
+      normalizeCorners(doc.corners),
+      doc.displayScale ?? 1,
+    );
+    plog("openDocument worker restored", { id, scale: data.scale, corners: data.corners?.length });
+    loadImageData(data, { resetPadding: false });
+    edgePadding = doc.edgePadding || 0;
+    $("edge-pad").value = edgePadding;
+    $("edge-pad-val").textContent = String(edgePadding);
+    applyDocumentSettings(doc);
+    opened = doc;
+  } catch (e) {
+    plogError("openDocument failed", e);
+    alert("Could not open saved scan.");
+  } finally {
+    persistSuspended = false;
+  }
+  if (!opened) {
+    plogWarn("openDocument aborted", { id });
+    return;
+  }
+  activeDocumentId = opened.id;
+  await setActiveDocument(opened.id);
+  if (touch) await touchDocument(opened.id);
+  await refreshSavedScans();
+  goToDocumentStep(opened);
+  plog("openDocument done", { id: opened.id, currentStep });
+}
+
+async function removeSavedDocument(id) {
+  persistSuspended = true;
+  try {
+    await deleteDocument(id);
+    const app = await getAppState();
+    if (activeDocumentId === id) {
+      resetViewer();
+      activeDocumentId = app.activeDocumentId;
+      if (activeDocumentId) await openDocument(activeDocumentId, { touch: false, force: true });
+    }
+    await refreshSavedScans();
+  } finally {
+    persistSuspended = false;
+  }
+}
+
+async function clearAllSaved() {
+  if (!confirm("Delete all saved scans?")) return;
+  persistSuspended = true;
+  try {
+    await clearAll();
+    resetViewer();
+    await refreshSavedScans();
+  } finally {
+    persistSuspended = false;
+  }
+}
+
+async function initPersistence() {
+  try {
+    await openDB();
+    const app = await getAppState();
+    activeDocumentId = app.activeDocumentId;
+    plog("initPersistence", { activeDocumentId, persistEnabled: true });
+    await refreshSavedScans();
+    setStep(1);
+  } catch (e) {
+    plogError("initPersistence failed", e);
+    persistEnabled = false;
+    savedScansRoot.classList.add("hidden");
+  }
+}
+
+waitForReady().then(async () => {
   loadingOverlay.classList.add("hidden");
   dropZone.classList.remove("disabled");
+  await initPersistence();
 });
 
 dropZone.addEventListener("click", () => { if (!dropZone.classList.contains("disabled")) fileInput.click(); });
@@ -98,30 +387,40 @@ function downloadFilename() {
 async function upload(file) {
   cancelOperation();
   dropZone.classList.add("loading");
-  $("export-filename").value = basenameFromFile(file);
-  $("export-filename").disabled = false;
+  const exportName = basenameFromFile(file);
   uploadAbort = new AbortController();
   updateCancelBtn();
+  persistSuspended = true;
   try {
     await waitForReady();
     if (uploadAbort.signal.aborted) throw new DOMException("Aborted", "AbortError");
     const buffer = await file.arrayBuffer();
+    const storeBuffer = buffer.slice(0);
     if (uploadAbort.signal.aborted) throw new DOMException("Aborted", "AbortError");
     const data = await detectImage(buffer, uploadAbort.signal);
-    if (sourceBitmap) sourceBitmap.close();
-    imageLoaded = true;
-    displayScale = data.scale ?? 1;
-    edgePadding = 0;
-    $("edge-pad").value = 0;
-    $("edge-pad-val").textContent = "0";
-    corners = data.corners;
-    sourceBitmap = data.preview;
-    $("edge-pad").max = maxEdgePadding();
-    drawSource();
+    resetUIToDefaults(exportName);
+    loadImageData(data);
+    if (persistEnabled) {
+      try {
+        const thumbBuffer = await thumbBufferFromPreview(data.preview);
+        const meta = newDocumentMeta(
+          file.name,
+          file.type || "application/octet-stream",
+          data,
+          exportName,
+        );
+        const doc = await createDocument(meta, storeBuffer, thumbBuffer);
+        activeDocumentId = doc.id;
+        await refreshSavedScans();
+      } catch (e) {
+        if (e.name === "QuotaExceededError") alert("Image too large to save locally.");
+      }
+    }
     setStep(2);
   } catch (e) {
     if (e.name !== "AbortError") alert("Detection failed. Try another image.");
   } finally {
+    persistSuspended = false;
     uploadAbort = null;
     updateCancelBtn();
     dropZone.classList.remove("loading");
@@ -161,6 +460,7 @@ function setEdgePadding(px) {
   edgePadding = Math.max(0, Math.min(+px | 0, maxEdgePadding()));
   $("edge-pad-val").textContent = String(edgePadding);
   drawSource();
+  scheduleDocumentSave();
 }
 
 function drawSource() {
@@ -340,6 +640,7 @@ function endCornerDrag() {
   dragging = -1;
   window.removeEventListener("mousemove", onCornerDrag);
   window.removeEventListener("mouseup", endCornerDrag);
+  scheduleDocumentSave();
 }
 
 sourceCanvas.addEventListener("mousedown", e => {
@@ -372,11 +673,15 @@ sourceCanvas.addEventListener("touchend", () => {
     drawSource();
   }
   dragging = -1;
+  scheduleDocumentSave();
 });
+
+$("clear-saved").addEventListener("click", clearAllSaved);
 
 $("edge-pad").addEventListener("input", () => setEdgePadding($("edge-pad").value));
 
 $("back-2").addEventListener("click", () => setStep(1));
+$("header-home").addEventListener("click", () => setStep(1));
 $("next-2").addEventListener("click", () => {
   setStep(3);
   if ($("preview-mode").value !== "none") doProcess();
@@ -747,16 +1052,19 @@ function updateExportUI() {
   $("png-colors-wrap").classList.toggle("hidden", $("png-mode").value !== "indexed");
 }
 
-$("export-format").addEventListener("change", updateExportUI);
-$("png-mode").addEventListener("change", updateExportUI);
+$("export-format").addEventListener("change", () => { updateExportUI(); scheduleDocumentSave(); });
+$("png-mode").addEventListener("change", () => { updateExportUI(); scheduleDocumentSave(); });
 $("png-compress").addEventListener("input", () => {
   $("png-compress-val").textContent = $("png-compress").value;
+  scheduleDocumentSave();
 });
 $("png-colors").addEventListener("input", () => {
   $("png-colors-val").textContent = $("png-colors").value;
+  scheduleDocumentSave();
 });
 $("jpeg-quality").addEventListener("input", () => {
   $("jpeg-quality-val").textContent = $("jpeg-quality").value;
+  scheduleDocumentSave();
 });
 updateExportUI();
 
@@ -847,6 +1155,7 @@ function getExportParams() {
 
 let previewTimer = null;
 function schedulePreview() {
+  scheduleDocumentSave();
   const mode = $("preview-mode").value;
   if (mode === "none" || currentStep !== 3) return;
   clearTimeout(previewTimer);

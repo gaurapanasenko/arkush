@@ -17,6 +17,7 @@
     border-bottom: 1px solid #333; display: flex; align-items: center; gap: 1.5rem;
   }
   header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
+  .header-home { margin-left: auto; flex-shrink: 0; }
 
   .steps { display: flex; gap: 0.5rem; flex: 1; }
   .step {
@@ -33,6 +34,40 @@
 
   #step-1 { align-items: center; justify-content: center; padding: 2rem; }
   #step-1 .bar { margin-top: auto; align-self: stretch; }
+  #step-1 .upload-col {
+    display: flex; flex-direction: column; align-items: center;
+    max-width: 640px; width: 100%; flex: 1; min-height: 0; justify-content: center;
+  }
+  .saved-scans { width: 100%; margin-top: 1.25rem; }
+  .saved-scans-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 0.5rem; font-size: 0.75rem; color: #888;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .saved-scans-head button {
+    font-size: 0.75rem; padding: 0.25rem 0.5rem; text-transform: none;
+    letter-spacing: normal; color: #aaa;
+  }
+  .saved-scans-strip {
+    display: flex; gap: 0.75rem; overflow-x: auto; padding-bottom: 0.25rem;
+  }
+  .saved-scan-card {
+    flex: 0 0 96px; display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+  }
+  .saved-scan-open {
+    width: 96px; height: 96px; padding: 0; border-radius: 8px;
+    border: 2px solid #444; background: #222; overflow: hidden; cursor: pointer;
+  }
+  .saved-scan-card.active .saved-scan-open { border-color: #6af; }
+  .saved-scan-open img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .saved-scan-name {
+    font-size: 0.7rem; color: #888; max-width: 96px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .saved-scan-remove {
+    background: none; border: none; color: #666; padding: 0; font-size: 0.85rem; line-height: 1;
+  }
+  .saved-scan-remove:hover { color: #f66; background: none; }
   #drop-zone {
     border: 2px dashed #555; border-radius: 12px; padding: 4rem 3rem;
     text-align: center; color: #888; cursor: pointer; max-width: 480px; width: 100%;
@@ -150,16 +185,26 @@
     <div class="step" id="ind-2">2. Select Document</div>
     <div class="step" id="ind-3">3. Preview &amp; Export</div>
   </nav>
+  <button type="button" id="header-home" class="header-home hidden">← Upload</button>
 </header>
 
 <main>
   <section class="step-panel active" id="step-1">
-    <div id="drop-zone" class="disabled">
-      <div style="font-size:2.5rem;margin-bottom:0.5rem">📄</div>
-      <strong>Drop an image here or click to upload</strong>
-      <p>JPEG, PNG, or any browser-supported image format</p>
+    <div class="upload-col">
+      <div id="drop-zone" class="disabled">
+        <div style="font-size:2.5rem;margin-bottom:0.5rem">📄</div>
+        <strong>Drop an image here or click to upload</strong>
+        <p>JPEG, PNG, or any browser-supported image format</p>
+      </div>
+      <input type="file" id="file-input" accept="image/*" class="hidden">
+      <div id="saved-scans" class="saved-scans hidden">
+        <div class="saved-scans-head">
+          <span>Saved scans</span>
+          <button type="button" id="clear-saved">Clear all</button>
+        </div>
+        <div id="saved-scans-strip" class="saved-scans-strip"></div>
+      </div>
     </div>
-    <input type="file" id="file-input" accept="image/*" class="hidden">
     <div class="bar">
       <span class="hint">All processing runs locally in your browser</span>
       <div class="bar-right">

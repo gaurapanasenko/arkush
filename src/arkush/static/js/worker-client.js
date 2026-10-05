@@ -56,7 +56,7 @@ function nextId() {
   return ++msgId;
 }
 
-export function detectImage(buffer, signal) {
+function postImageJob(type, buffer, extra, signal) {
   return waitForReady().then(() => new Promise((resolve, reject) => {
     const id = nextId();
     const key = `i${id}`;
@@ -68,8 +68,16 @@ export function detectImage(buffer, signal) {
         reject(new DOMException("Aborted", "AbortError"));
       }, { once: true });
     }
-    worker.postMessage({ type: "detect", id, buffer }, [buffer]);
+    worker.postMessage({ type, id, buffer, ...extra }, [buffer]);
   }));
+}
+
+export function detectImage(buffer, signal) {
+  return postImageJob("detect", buffer, {}, signal);
+}
+
+export function restoreImage(buffer, corners, scale) {
+  return postImageJob("restore", buffer, { corners, scale });
 }
 
 export function processImage(params, gen) {
