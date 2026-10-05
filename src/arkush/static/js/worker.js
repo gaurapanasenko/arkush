@@ -128,6 +128,16 @@ async function handleProcess(msg) {
         self.postMessage({ type: "cancelled", gen });
         return;
       }
+      console.error("[arkush:process]", "processImage failed", {
+        gen,
+        message: e?.message,
+        stack: e?.stack,
+        format: p.format,
+        preview_mode: p.preview_mode,
+        padding,
+        filterCount: filters.length,
+        filterTypes: filters.map(f => f.type),
+      });
       self.postMessage({ type: "error", gen, message: e.message || "Processing failed" });
       return;
     }
@@ -259,6 +269,11 @@ function onMessage(msg) {
       break;
     case "process":
       handleProcess(msg).catch(e => {
+        console.error("[arkush:process]", "handleProcess uncaught", {
+          gen: msg.gen,
+          message: e?.message,
+          stack: e?.stack,
+        });
         self.postMessage({ type: "error", gen: msg.gen, message: e.message || "Processing failed" });
       });
       break;

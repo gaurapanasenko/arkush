@@ -24,8 +24,10 @@ function ensureWorker() {
       if (!handlers) return;
       if (msg.type === "processed" || msg.type === "exported" || msg.type === "cancelled" || msg.type === "error") {
         pending.delete(key);
-        if (msg.type === "error") handlers.reject(new Error(msg.message));
-        else handlers.resolve(msg);
+        if (msg.type === "error") {
+          console.error("[arkush:process]", "worker gen error", { gen: msg.gen, message: msg.message });
+          handlers.reject(new Error(msg.message));
+        } else handlers.resolve(msg);
       }
       return;
     }

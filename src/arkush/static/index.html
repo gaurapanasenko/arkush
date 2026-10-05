@@ -18,8 +18,9 @@
   }
   header h1 { font-size: 1.1rem; font-weight: 600; white-space: nowrap; }
   .header-home { margin-left: auto; flex-shrink: 0; }
+  .step-short, .home-short { display: none; }
 
-  .steps { display: flex; gap: 0.5rem; flex: 1; }
+  .steps { display: flex; gap: 0.5rem; flex: 1; min-width: 0; }
   .step {
     padding: 0.35rem 0.75rem; border-radius: 999px; font-size: 0.8rem;
     color: #666; background: #252525; white-space: nowrap;
@@ -110,8 +111,9 @@
 
   .preview-layout { flex: 1; min-height: 0; display: flex; }
   .preview-layout .canvas-area { flex: 1; border-right: 1px solid #333; }
+  #preview-area { touch-action: none; }
   .sidebar {
-    width: 280px; flex-shrink: 0; display: flex; flex-direction: column;
+    width: clamp(160px, 28vw, 280px); flex-shrink: 0; display: flex; flex-direction: column;
     background: #1e1e1e; border-left: 1px solid #333;
   }
   .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0.75rem; }
@@ -170,6 +172,31 @@
 
   .hidden { display: none !important; }
   .loading { opacity: 0.5; pointer-events: none; }
+
+  @media (max-width: 720px) {
+    header { padding: 0.5rem 0.65rem; gap: 0.5rem; }
+    header h1 { font-size: 0.95rem; }
+    .steps { gap: 0.35rem; }
+    .step { padding: 0.28rem 0.5rem; font-size: 0.72rem; }
+    .step-full, .home-full { display: none; }
+    .step-short, .home-short { display: inline; }
+    .header-home { padding: 0.28rem 0.55rem; font-size: 0.72rem; }
+    #step-3 .bar { padding: 0.5rem 0.65rem; gap: 0.5rem; }
+    #step-3 .bar .hint { font-size: 0.75rem; min-width: 0; }
+    #step-3 .bar button { padding: 0.35rem 0.6rem; font-size: 0.78rem; }
+  }
+
+  @media (max-width: 640px) {
+    header h1 { display: none; }
+    .preview-layout { flex-direction: column; }
+    .preview-layout .canvas-area {
+      flex: 1 1 50%; min-height: 0; border-right: none; border-bottom: 1px solid #333;
+    }
+    .sidebar {
+      width: 100%; flex: 0 1 auto; max-height: min(42vh, 320px);
+      border-left: none;
+    }
+  }
 </style>
 </head>
 <body>
@@ -181,11 +208,11 @@
 <header>
   <h1>arkush</h1>
   <nav class="steps">
-    <div class="step active" id="ind-1">1. Upload</div>
-    <div class="step" id="ind-2">2. Select Document</div>
-    <div class="step" id="ind-3">3. Preview &amp; Export</div>
+    <div class="step active" id="ind-1"><span class="step-full">1. Upload</span><span class="step-short">1</span></div>
+    <div class="step" id="ind-2"><span class="step-full">2. Select Document</span><span class="step-short">2</span></div>
+    <div class="step" id="ind-3"><span class="step-full">3. Preview &amp; Export</span><span class="step-short">3</span></div>
   </nav>
-  <button type="button" id="header-home" class="header-home hidden">← Upload</button>
+  <button type="button" id="header-home" class="header-home hidden"><span class="home-full">← Upload</span><span class="home-short">←</span></button>
 </header>
 
 <main>

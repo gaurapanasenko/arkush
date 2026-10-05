@@ -31,7 +31,7 @@ import {
   updateDocument,
 } from "./persist.js";
 import { renderSavedScans, thumbBufferFromPreview } from "./persist-ui.js";
-import { plog, plogError, plogWarn } from "./persist-log.js";
+import { plog, plogError, plogWarn, procLogError, summarizeProcessParams } from "./persist-log.js";
 
 const $ = id => document.getElementById(id);
 const sourceCanvas = $("source-canvas");
@@ -711,48 +711,140 @@ function drawResult() {
 }
 
 function resultCanvasPos(e) {
+  return resultCanvasPosFromClient(e.clientX, e.clientY);
+}
+
+function resultCanvasPosFromClient(clientX, clientY) {
   const rect = resultCanvas.getBoundingClientRect();
   return [
-    (e.clientX - rect.left) * resultCanvas.width / rect.width,
-    (e.clientY - rect.top) * resultCanvas.height / rect.height,
+    (clientX - rect.left) * resultCanvas.width / rect.width,
+    (clientY - rect.top) * resultCanvas.height / rect.height,
   ];
 }
 
-const previewArea = $("preview-area");
-
-previewArea.addEventListener("wheel", e => {
-  if (currentStep !== 3 || !resultImg) return;
-  e.preventDefault();
-  const [mx, my] = resultCanvasPos(e);
-  const factor = e.deltaY > 0 ? 0.9 : 1.1;
-  const newZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, viewZoom * factor));
+function setViewZoomAt(mx, my, newZoom) {
+  newZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, newZoom));
   if (newZoom === viewZoom) return;
   viewPanX = mx - (mx - viewPanX) * (newZoom / viewZoom);
   viewPanY = my - (my - viewPanY) * (newZoom / viewZoom);
   viewZoom = newZoom;
   drawResult();
+}
+
+function panViewTo(clientX, clientY) {
+  const rect = resultCanvas.getBoundingClientRect();
+  const sx = resultCanvas.width / rect.width;
+  const sy = resultCanvas.height / rect.height;
+  viewPanX = viewPanStart.panX + (clientX - viewPanStart.cx) * sx;
+  viewPanY = viewPanStart.panY + (clientY - viewPanStart.cy) * sy;
+  drawResult();
+}
+
+const previewArea = $("preview-area");
+let previewTouchMode = null;
+let pinchStartDist = 0;
+let pinchStartZoom = 1;
+let pinchAnchor = [0, 0];
+
+function touchSpan(touches) {
+  return Math.hypot(
+    touches[0].clientX - touches[1].clientX,
+    touches[0].clientY - touches[1].clientY,
+  );
+}
+
+function touchMidCanvas(touches) {
+  return resultCanvasPosFromClient(
+    (touches[0].clientX + touches[1].clientX) / 2,
+    (touches[0].clientY + touches[1].clientY) / 2,
+  );
+}
+
+function beginPreviewPan(clientX, clientY) {
+  viewPanning = true;
+  viewPanStart = { cx: clientX, cy: clientY, panX: viewPanX, panY: viewPanY };
+  resultCanvas.classList.add("panning");
+}
+
+function beginPreviewPinch(touches) {
+  previewTouchMode = "pinch";
+  viewPanning = false;
+  resultCanvas.classList.remove("panning");
+  pinchStartDist = touchSpan(touches);
+  pinchStartZoom = viewZoom;
+  pinchAnchor = touchMidCanvas(touches);
+}
+
+previewArea.addEventListener("wheel", e => {
+  if (currentStep !== 3 || !resultImg) return;
+  e.preventDefault();
+  const [mx, my] = resultCanvasPos(e);
+  setViewZoomAt(mx, my, viewZoom * (e.deltaY > 0 ? 0.9 : 1.1));
 }, { passive: false });
 
 resultCanvas.addEventListener("mousedown", e => {
   if (currentStep !== 3 || !resultImg) return;
   e.preventDefault();
-  viewPanning = true;
-  viewPanStart = { cx: e.clientX, cy: e.clientY, panX: viewPanX, panY: viewPanY };
-  resultCanvas.classList.add("panning");
+  beginPreviewPan(e.clientX, e.clientY);
 });
 
 window.addEventListener("mousemove", e => {
   if (!viewPanning) return;
-  const rect = resultCanvas.getBoundingClientRect();
-  const sx = resultCanvas.width / rect.width;
-  const sy = resultCanvas.height / rect.height;
-  viewPanX = viewPanStart.panX + (e.clientX - viewPanStart.cx) * sx;
-  viewPanY = viewPanStart.panY + (e.clientY - viewPanStart.cy) * sy;
-  drawResult();
+  panViewTo(e.clientX, e.clientY);
 });
 
 window.addEventListener("mouseup", () => {
   if (!viewPanning) return;
+  viewPanning = false;
+  viewPanStart = null;
+  resultCanvas.classList.remove("panning");
+});
+
+previewArea.addEventListener("touchstart", e => {
+  if (currentStep !== 3 || !resultImg) return;
+  if (e.touches.length >= 2) {
+    e.preventDefault();
+    beginPreviewPinch(e.touches);
+  } else if (e.touches.length === 1) {
+    previewTouchMode = "pan";
+    beginPreviewPan(e.touches[0].clientX, e.touches[0].clientY);
+  }
+}, { passive: false });
+
+previewArea.addEventListener("touchmove", e => {
+  if (currentStep !== 3 || !resultImg) return;
+  if (previewTouchMode === "pinch" && e.touches.length >= 2) {
+    e.preventDefault();
+    if (pinchStartDist > 0) {
+      setViewZoomAt(
+        pinchAnchor[0], pinchAnchor[1],
+        pinchStartZoom * (touchSpan(e.touches) / pinchStartDist),
+      );
+    }
+  } else if (previewTouchMode === "pan" && e.touches.length === 1 && viewPanning) {
+    e.preventDefault();
+    panViewTo(e.touches[0].clientX, e.touches[0].clientY);
+  }
+}, { passive: false });
+
+previewArea.addEventListener("touchend", e => {
+  if (e.touches.length >= 2) {
+    beginPreviewPinch(e.touches);
+    return;
+  }
+  if (e.touches.length === 1) {
+    previewTouchMode = "pan";
+    beginPreviewPan(e.touches[0].clientX, e.touches[0].clientY);
+    return;
+  }
+  previewTouchMode = null;
+  viewPanning = false;
+  viewPanStart = null;
+  resultCanvas.classList.remove("panning");
+});
+
+previewArea.addEventListener("touchcancel", () => {
+  previewTouchMode = null;
   viewPanning = false;
   viewPanStart = null;
   resultCanvas.classList.remove("panning");
@@ -1165,13 +1257,14 @@ function schedulePreview() {
 async function doProcess() {
   if (!imageLoaded) return;
   const gen = ++processGen;
+  const params = getParams();
   cancelWorker(gen - 1);
 
   $("preview-status").textContent = "Processing…";
   $("apply-btn").disabled = true;
   updateCancelBtn();
   try {
-    const data = await processImage(getParams(), gen);
+    const data = await processImage(params, gen);
     if (gen !== processGen) return;
     if (data.type === "cancelled") return;
 
@@ -1191,7 +1284,16 @@ async function doProcess() {
     $("preview-status").textContent =
       `Preview${modeLabel ? ` (${modeLabel})` : ""}: ${data.width} × ${data.height} px · ${Math.round(viewZoom * 100)}%`;
   } catch (e) {
-    if (gen !== processGen) return;
+    if (gen !== processGen) {
+      procLogError("doProcess stale generation", { gen, current: processGen });
+      return;
+    }
+    procLogError("doProcess failed", {
+      gen,
+      message: e?.message,
+      stack: e?.stack,
+      params: summarizeProcessParams(params),
+    });
     $("preview-status").textContent = "Processing failed";
   } finally {
     if (gen === processGen) {
