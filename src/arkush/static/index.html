@@ -167,6 +167,10 @@
     </div>
     <div class="bar">
       <span class="hint">Drag corner handles · click a handle to show magnifier · scroll wheel on magnifier to zoom</span>
+      <label class="opt">
+        <span>Edge padding <span class="radius-val" id="edge-pad-val">0</span> px</span>
+        <input type="range" id="edge-pad" min="0" max="0" step="1" value="0">
+      </label>
       <div class="bar-right">
         <button id="back-2">← Back</button>
         <button class="primary" id="next-2">Continue →</button>
@@ -278,6 +282,8 @@ const magnifier = $("magnifier");
 
 let imageId = null;
 let sourceImg = new Image();
+let displayScale = 1;
+let edgePadding = 0;
 let corners = [];
 let dragging = -1;
 let currentStep = 1;
@@ -354,10 +360,13 @@ async function upload(file) {
     if (!res.ok) throw new Error();
     const data = await res.json();
     imageId = data.image_id;
+    displayScale = data.scale ?? 1;
+    edgePadding = 0;
+    $("edge-pad").value = 0;
+    $("edge-pad-val").textContent = "0";
     corners = data.corners;
     sourceImg.onload = () => {
-      sourceCanvas.width = data.width;
-      sourceCanvas.height = data.height;
+      $("edge-pad").max = maxEdgePadding();
       drawSource();
       setStep(2);
     };
@@ -373,9 +382,49 @@ async function upload(file) {
 }
 
 // --- drawing ---
+function replicatePad(img, p) {
+  if (!p) return img;
+  const w = img.width, h = img.height;
+  const out = document.createElement("canvas");
+  out.width = w + 2 * p;
+  out.height = h + 2 * p;
+  const ctx = out.getContext("2d");
+  ctx.drawImage(img, 0, 0, 1, 1, 0, 0, p, p);
+  ctx.drawImage(img, w - 1, 0, 1, 1, w + p, 0, p, p);
+  ctx.drawImage(img, 0, h - 1, 1, 1, 0, h + p, p, p);
+  ctx.drawImage(img, w - 1, h - 1, 1, 1, w + p, h + p, p, p);
+  ctx.drawImage(img, p, p);
+  ctx.drawImage(img, 0, 0, 1, h, 0, p, p, h);
+  ctx.drawImage(img, w - 1, 0, 1, h, w + p, p, p, h);
+  ctx.drawImage(img, 0, 0, w, 1, p, 0, w, p);
+  ctx.drawImage(img, 0, h - 1, w, 1, p, h + p, w, p);
+  return out;
+}
+
+function paddedSource() {
+  return replicatePad(sourceImg, edgePadding);
+}
+
+function maxEdgePadding() {
+  if (!sourceImg.width) return 0;
+  return Math.floor(Math.min(sourceImg.width, sourceImg.height) * 0.5);
+}
+
+function setEdgePadding(px) {
+  const next = Math.max(0, Math.min(+px | 0, maxEdgePadding()));
+  const delta = next - edgePadding;
+  edgePadding = next;
+  $("edge-pad-val").textContent = String(edgePadding);
+  if (delta) corners = corners.map(([x, y]) => [x + delta, y + delta]);
+  drawSource();
+}
+
 function drawSource() {
+  const padded = paddedSource();
+  sourceCanvas.width = padded.width;
+  sourceCanvas.height = padded.height;
   sCtx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
-  sCtx.drawImage(sourceImg, 0, 0);
+  sCtx.drawImage(padded, 0, 0);
   if (corners.length !== 4) return;
 
   // dim outside selection
@@ -425,12 +474,13 @@ function positionMagnifier(clientX, clientY) {
 
 function renderMagnifier() {
   const { clientX, clientY, cx, cy } = magPos;
+  const padded = paddedSource();
   const half = MAG_SIZE / (2 * magZoom);
-  const sx = Math.max(0, Math.min(cx - half, sourceImg.width - half * 2));
-  const sy = Math.max(0, Math.min(cy - half, sourceImg.height - half * 2));
+  const sx = Math.max(0, Math.min(cx - half, padded.width - half * 2));
+  const sy = Math.max(0, Math.min(cy - half, padded.height - half * 2));
 
   magCtx.clearRect(0, 0, MAG_SIZE, MAG_SIZE);
-  magCtx.drawImage(sourceImg, sx, sy, half * 2, half * 2, 0, 0, MAG_SIZE, MAG_SIZE);
+  magCtx.drawImage(padded, sx, sy, half * 2, half * 2, 0, 0, MAG_SIZE, MAG_SIZE);
 
   const relX = ((cx - sx) / (half * 2)) * MAG_SIZE;
   const relY = ((cy - sy) / (half * 2)) * MAG_SIZE;
@@ -511,12 +561,7 @@ function hitTest(x, y) {
   return -1;
 }
 
-sourceCanvas.addEventListener("mousedown", e => {
-  const [x, y] = canvasPos(e);
-  dragging = hitTest(x, y);
-  if (dragging >= 0) enableMag(dragging);
-});
-sourceCanvas.addEventListener("mousemove", e => {
+function onCornerDrag(e) {
   if (dragging < 0) return;
   const [x, y] = canvasPos(e);
   corners[dragging] = [
@@ -525,8 +570,9 @@ sourceCanvas.addEventListener("mousemove", e => {
   ];
   drawSource();
   showMagnifier(e.clientX, e.clientY, corners[dragging][0], corners[dragging][1]);
-});
-sourceCanvas.addEventListener("mouseup", () => {
+}
+
+function endCornerDrag() {
   if (dragging >= 0) {
     activeCorner = dragging;
     magEnabled = true;
@@ -534,8 +580,18 @@ sourceCanvas.addEventListener("mouseup", () => {
     drawSource();
   }
   dragging = -1;
+  window.removeEventListener("mousemove", onCornerDrag);
+  window.removeEventListener("mouseup", endCornerDrag);
+}
+
+sourceCanvas.addEventListener("mousedown", e => {
+  const [x, y] = canvasPos(e);
+  dragging = hitTest(x, y);
+  if (dragging < 0) return;
+  enableMag(dragging);
+  window.addEventListener("mousemove", onCornerDrag);
+  window.addEventListener("mouseup", endCornerDrag);
 });
-sourceCanvas.addEventListener("mouseleave", () => { dragging = -1; });
 
 // touch support for corners
 sourceCanvas.addEventListener("touchstart", e => {
@@ -568,6 +624,8 @@ sourceCanvas.addEventListener("touchend", () => {
 });
 
 // --- navigation ---
+$("edge-pad").addEventListener("input", () => setEdgePadding($("edge-pad").value));
+
 $("back-2").addEventListener("click", () => setStep(1));
 $("next-2").addEventListener("click", () => {
   setStep(3);
@@ -736,7 +794,35 @@ function renderFilterStack() {
       highIn.addEventListener("input", () => { f.high = Math.max(+highIn.value, f.low + 1); syncRange(); });
       dual.append(track, lowIn, highIn);
       rangeLbl.append(rangeTop, dual);
-      params.appendChild(rangeLbl);
+      const autoBtn = document.createElement("button");
+      autoBtn.type = "button";
+      autoBtn.textContent = "Autodetect";
+      autoBtn.style.marginTop = "0.35rem";
+      autoBtn.addEventListener("click", async () => {
+        if (!imageId) return;
+        autoBtn.disabled = true;
+        try {
+          const idx = filters.findIndex(x => x.id === f.id);
+          const res = await fetch("/detect-levels", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...getBaseParams(),
+              filters: filters.slice(0, idx).map(({ id, ...rest }) => rest),
+            }),
+          });
+          if (!res.ok) throw new Error();
+          const data = await res.json();
+          f.low = data.low;
+          f.high = data.high;
+          syncRange();
+        } catch {
+          alert("Autodetect failed");
+        } finally {
+          autoBtn.disabled = false;
+        }
+      });
+      params.append(rangeLbl, autoBtn);
       card.appendChild(params);
     }
 
@@ -926,11 +1012,19 @@ function cancelOperation() {
 
 document.querySelectorAll(".cancel-op").forEach(b => b.addEventListener("click", cancelOperation));
 
-function getParams() {
+function getBaseParams() {
+  const pad = Math.round(edgePadding / displayScale);
   return {
     image_id: imageId,
-    corners,
+    corners: corners.map(([x, y]) => [x - edgePadding, y - edgePadding]),
     format: $("format").value,
+    padding: pad,
+  };
+}
+
+function getParams() {
+  return {
+    ...getBaseParams(),
     filters: filters.map(({ id, ...rest }) => rest),
     preview_mode: $("preview-mode").value,
   };

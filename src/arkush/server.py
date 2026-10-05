@@ -18,10 +18,15 @@ from pydantic import BaseModel, Field
 
 from arkush.detect import corners_to_display, display_image, find_corners
 from arkush.process import (
+    FORMATS,
     ProcessingCancelled,
+    apply_filter,
+    detect_auto_levels,
     downscale_for_preview,
+    edge_pad,
     encode_image,
     process,
+    warp,
 )
 
 STATIC = Path(__file__).parent / "static"
@@ -51,6 +56,15 @@ class ProcessRequest(BaseModel):
     format: str = "a4"
     filters: list[Filter] = []
     preview_mode: Literal["none", "fast", "full"] = "fast"
+    padding: int = Field(default=0, ge=0)
+
+
+class DetectLevelsRequest(BaseModel):
+    image_id: str
+    corners: list[list[float]]
+    format: str = "a4"
+    filters: list[Filter] = []
+    padding: int = Field(default=0, ge=0)
 
 
 class ExportRequest(ProcessRequest):
@@ -77,8 +91,8 @@ def _filter_dict(f: Filter) -> dict:
             return {}
 
 
-def _process_key(corners: np.ndarray, fmt: str, filters: list[dict]) -> str:
-    payload = json.dumps({"c": corners.tolist(), "f": fmt, "filters": filters}, sort_keys=True)
+def _process_key(corners: np.ndarray, fmt: str, filters: list[dict], padding: int) -> str:
+    payload = json.dumps({"c": corners.tolist(), "f": fmt, "filters": filters, "p": padding}, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -109,12 +123,22 @@ def _scaled_corners(entry: dict, corners: np.ndarray) -> np.ndarray:
     return corners
 
 
+def _max_padding(entry: dict) -> int:
+    h, w = entry["original"].shape[:2]
+    return int(min(w, h) * 0.5)
+
+
+def _clamp_padding(entry: dict, padding: int) -> int:
+    return max(0, min(int(padding), _max_padding(entry)))
+
+
 async def _run_process(
     request: Request,
     original: np.ndarray,
     corners: np.ndarray,
     fmt: str,
     filters: list[dict],
+    padding: int,
 ) -> np.ndarray:
     cancelled = {"v": False}
 
@@ -136,6 +160,7 @@ async def _run_process(
                 corners,
                 fmt,
                 filters,
+                padding,
                 cancelled=lambda: cancelled["v"],
             ),
         )
@@ -151,12 +176,13 @@ async def _get_full_result(
     corners: np.ndarray,
     fmt: str,
     filters: list[dict],
+    padding: int,
 ) -> tuple[np.ndarray, bool]:
-    key = _process_key(corners, fmt, filters)
+    key = _process_key(corners, fmt, filters, padding)
     cached = entry.get("processed", {}).get(key)
     if cached is not None:
         return cached, True
-    result = await _run_process(request, entry["original"], corners, fmt, filters)
+    result = await _run_process(request, entry["original"], corners, fmt, filters, padding)
     _store_processed(entry, key, result)
     return result, False
 
@@ -179,7 +205,30 @@ async def detect(file: UploadFile = File(...)):
         "image": _b64_png(disp),
         "width": disp.shape[1],
         "height": disp.shape[0],
+        "scale": scale,
     }
+
+
+@app.post("/detect-levels")
+async def detect_levels(req: DetectLevelsRequest):
+    entry = _cache.get(req.image_id)
+    if entry is None:
+        raise HTTPException(404, "Image not found, re-upload")
+
+    corners = _scaled_corners(entry, np.array(req.corners, dtype=np.float32))
+    fmt = req.format if req.format in ("a4", "letter", "none") else "a4"
+    padding = _clamp_padding(entry, req.padding)
+    img = entry["original"]
+    if padding > 0:
+        img = edge_pad(img, padding)
+        corners = corners + padding
+
+    img = warp(img, corners, FORMATS.get(fmt))
+    for filt in [_filter_dict(f) for f in req.filters]:
+        img = apply_filter(img, filt)
+
+    low, high = detect_auto_levels(img)
+    return {"low": low, "high": high}
 
 
 @app.post("/process")
@@ -191,8 +240,9 @@ async def process_image(req: ProcessRequest, request: Request):
     corners = _scaled_corners(entry, np.array(req.corners, dtype=np.float32))
     fmt = req.format if req.format in ("a4", "letter", "none") else "a4"
     filters = [_filter_dict(f) for f in req.filters]
+    padding = _clamp_padding(entry, req.padding)
 
-    full, from_cache = await _get_full_result(request, entry, corners, fmt, filters)
+    full, from_cache = await _get_full_result(request, entry, corners, fmt, filters, padding)
     result = downscale_for_preview(full) if req.preview_mode == "fast" else full
     return {"image": _b64_png(result), "cached": from_cache}
 
@@ -206,8 +256,9 @@ async def export_image(req: ExportRequest, request: Request):
     corners = _scaled_corners(entry, np.array(req.corners, dtype=np.float32))
     fmt = req.format if req.format in ("a4", "letter", "none") else "a4"
     filters = [_filter_dict(f) for f in req.filters]
+    padding = _clamp_padding(entry, req.padding)
 
-    result, _ = await _get_full_result(request, entry, corners, fmt, filters)
+    result, _ = await _get_full_result(request, entry, corners, fmt, filters, padding)
     data, media_type, filename = encode_image(
         result,
         fmt,

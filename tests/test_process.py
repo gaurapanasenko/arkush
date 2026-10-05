@@ -11,8 +11,10 @@ from arkush.process import (
     ProcessingCancelled,
     apply_filter,
     auto_levels,
+    detect_auto_levels,
     divide_bg,
     downscale_for_preview,
+    edge_pad,
     encode_image,
     process,
     quantize,
@@ -31,6 +33,32 @@ def sample_bgr():
 @pytest.fixture
 def sample_corners():
     return np.array([[20, 20], [60, 20], [60, 60], [20, 60]], dtype=np.float32)
+
+
+def test_edge_pad_replicates_border():
+    img = np.zeros((10, 10, 3), np.uint8)
+    img[:, :5] = 100
+    img[:, 5:] = 200
+    out = edge_pad(img, 2)
+    assert out.shape == (14, 14, 3)
+    assert out[0, 0, 0] == 100
+    assert out[0, -1, 0] == 200
+    assert out[-1, 0, 0] == 100
+    assert out[1, 1, 0] == 100
+    assert out[1, -2, 0] == 200
+
+
+def test_edge_pad_corner_pixels():
+    img = np.zeros((10, 10, 3), np.uint8)
+    img[0, 0] = [1, 2, 3]
+    img[0, -1] = [4, 5, 6]
+    img[-1, 0] = [7, 8, 9]
+    img[-1, -1] = [10, 11, 12]
+    out = edge_pad(img, 3)
+    assert (out[0, 0] == [1, 2, 3]).all()
+    assert (out[0, -1] == [4, 5, 6]).all()
+    assert (out[-1, 0] == [7, 8, 9]).all()
+    assert (out[-1, -1] == [10, 11, 12]).all()
 
 
 def test_auto_levels_stretches_value_range(sample_bgr):
@@ -88,6 +116,14 @@ def test_unsharp_changes_image(sample_bgr):
     out = unsharp(sample_bgr, radius=2, amount=150)
     assert out.shape == sample_bgr.shape
     assert not np.array_equal(out, sample_bgr)
+
+
+def test_detect_auto_levels_on_gradient():
+    img = np.tile(np.arange(256, dtype=np.uint8), (10, 1))
+    img = np.stack([img] * 3, axis=-1)
+    low, high = detect_auto_levels(img)
+    assert low < high
+    assert low >= 0 and high <= 255
 
 
 def test_grayscale_keeps_shape(sample_bgr):

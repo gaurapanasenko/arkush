@@ -21,6 +21,15 @@ class ProcessingCancelled(Exception):
     pass
 
 
+def detect_auto_levels(img: np.ndarray, clip: float = 0.005) -> tuple[int, int]:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    lo = int(np.percentile(gray, clip * 100))
+    hi = int(np.percentile(gray, (1 - clip) * 100))
+    lo = max(0, min(254, lo))
+    hi = max(lo + 1, min(255, hi))
+    return lo, hi
+
+
 def auto_levels(img: np.ndarray, low: int = 0, high: int = 255) -> np.ndarray:
     low = max(0, min(254, low))
     high = max(low + 1, min(255, high))
@@ -122,6 +131,24 @@ def apply_filter(img: np.ndarray, filt: dict[str, Any]) -> np.ndarray:
             return img
 
 
+def edge_pad(img: np.ndarray, px: int) -> np.ndarray:
+    px = max(0, int(px))
+    if px == 0:
+        return img
+    h, w = img.shape[:2]
+    out = np.empty((h + 2 * px, w + 2 * px) + img.shape[2:], img.dtype)
+    out[px : px + h, px : px + w] = img
+    out[:px, :px] = img[0, 0]
+    out[:px, px + w :] = img[0, -1]
+    out[px + h :, :px] = img[-1, 0]
+    out[px + h :, px + w :] = img[-1, -1]
+    out[:px, px : px + w] = img[0:1, :]
+    out[px + h :, px : px + w] = img[-1:, :]
+    out[px : px + h, :px] = img[:, 0:1]
+    out[px : px + h, px + w :] = img[:, -1:]
+    return out
+
+
 def warp(img: np.ndarray, corners: np.ndarray, out_size: tuple[int, int] | None) -> np.ndarray:
     corners = np.array(corners, dtype=np.float32).reshape(4, 2)
     if out_size is None:
@@ -143,10 +170,15 @@ def process(
     corners: np.ndarray,
     fmt: str,
     filters: list[dict[str, Any]],
+    padding: int = 0,
     cancelled: Callable[[], bool] | None = None,
 ) -> np.ndarray:
     if cancelled and cancelled():
         raise ProcessingCancelled()
+
+    if padding > 0:
+        img = edge_pad(img, padding)
+        corners = np.asarray(corners, dtype=np.float32) + padding
 
     out_size = FORMATS.get(fmt)
     result = warp(img, corners, out_size)
