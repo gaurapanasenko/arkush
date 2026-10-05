@@ -72,7 +72,6 @@ let viewPanX = 0;
 let viewPanY = 0;
 let viewPanning = false;
 let viewPanStart = null;
-const VIEW_ZOOM_MIN = 1;
 const VIEW_ZOOM_MAX = 20;
 
 function toDisplayCorners() {
@@ -688,26 +687,77 @@ $("next-2").addEventListener("click", () => {
 });
 $("back-3").addEventListener("click", () => { drawSource(); setStep(2); });
 
+function previewPadPx() {
+  const raw = getComputedStyle($("preview-area")).getPropertyValue("--preview-pad").trim();
+  if (raw.endsWith("rem")) {
+    return parseFloat(raw) * parseFloat(getComputedStyle(document.documentElement).fontSize);
+  }
+  return parseFloat(raw) || 12;
+}
+
+function syncPreviewCanvasSize() {
+  const cw = resultCanvas.clientWidth;
+  const ch = resultCanvas.clientHeight;
+  if (cw <= 0 || ch <= 0) return false;
+  if (resultCanvas.width !== cw || resultCanvas.height !== ch) {
+    resultCanvas.width = cw;
+    resultCanvas.height = ch;
+  }
+  return true;
+}
+
+function getViewZoomMin() {
+  if (!resultImg || !syncPreviewCanvasSize()) return 1;
+  const pad = previewPadPx();
+  const zx = (resultCanvas.width - 2 * pad) / resultImg.width;
+  const zy = (resultCanvas.height - 2 * pad) / resultImg.height;
+  return Math.max(0.01, Math.min(zx, zy));
+}
+
+function centerView() {
+  const cw = resultCanvas.width;
+  const ch = resultCanvas.height;
+  viewPanX = (cw - resultImg.width * viewZoom) / 2;
+  viewPanY = (ch - resultImg.height * viewZoom) / 2;
+}
+
+function resetPreviewView() {
+  viewZoom = getViewZoomMin();
+  centerView();
+}
+
 function clampView() {
   if (!resultImg) return;
-  const w = resultCanvas.width;
-  const h = resultCanvas.height;
-  viewZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, viewZoom));
-  viewPanX = Math.min(0, Math.max(w - w * viewZoom, viewPanX));
-  viewPanY = Math.min(0, Math.max(h - h * viewZoom, viewPanY));
+  syncPreviewCanvasSize();
+  const cw = resultCanvas.width;
+  const ch = resultCanvas.height;
+  const iw = resultImg.width;
+  const ih = resultImg.height;
+  viewZoom = Math.max(getViewZoomMin(), Math.min(VIEW_ZOOM_MAX, viewZoom));
+  const minPanX = Math.min(0, cw - iw * viewZoom);
+  const maxPanX = Math.max(0, cw - iw * viewZoom);
+  const minPanY = Math.min(0, ch - ih * viewZoom);
+  const maxPanY = Math.max(0, ch - ih * viewZoom);
+  viewPanX = Math.max(minPanX, Math.min(maxPanX, viewPanX));
+  viewPanY = Math.max(minPanY, Math.min(maxPanY, viewPanY));
 }
 
 function drawResult() {
-  if (!resultImg) return;
+  if (!resultImg || !syncPreviewCanvasSize()) return;
   clampView();
-  const w = resultCanvas.width;
-  const h = resultCanvas.height;
+  const cw = resultCanvas.width;
+  const ch = resultCanvas.height;
   rCtx.setTransform(1, 0, 0, 1, 0, 0);
   rCtx.fillStyle = "#111";
-  rCtx.fillRect(0, 0, w, h);
+  rCtx.fillRect(0, 0, cw, ch);
   rCtx.translate(viewPanX, viewPanY);
   rCtx.scale(viewZoom, viewZoom);
   rCtx.drawImage(resultImg, 0, 0);
+}
+
+function previewZoomPct() {
+  const minZ = getViewZoomMin();
+  return minZ > 0 ? Math.round((viewZoom / minZ) * 100) : 100;
 }
 
 function resultCanvasPos(e) {
@@ -723,7 +773,7 @@ function resultCanvasPosFromClient(clientX, clientY) {
 }
 
 function setViewZoomAt(mx, my, newZoom) {
-  newZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, newZoom));
+  newZoom = Math.max(getViewZoomMin(), Math.min(VIEW_ZOOM_MAX, newZoom));
   if (newZoom === viewZoom) return;
   viewPanX = mx - (mx - viewPanX) * (newZoom / viewZoom);
   viewPanY = my - (my - viewPanY) * (newZoom / viewZoom);
@@ -738,6 +788,26 @@ function panViewTo(clientX, clientY) {
   viewPanX = viewPanStart.panX + (clientX - viewPanStart.cx) * sx;
   viewPanY = viewPanStart.panY + (clientY - viewPanStart.cy) * sy;
   drawResult();
+}
+
+function panViewBy(clientDx, clientDy) {
+  const rect = resultCanvas.getBoundingClientRect();
+  viewPanX -= clientDx * resultCanvas.width / rect.width;
+  viewPanY -= clientDy * resultCanvas.height / rect.height;
+  drawResult();
+}
+
+function wheelDeltaPx(e) {
+  let dx = e.deltaX;
+  let dy = e.deltaY;
+  if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    dx *= 16;
+    dy *= 16;
+  } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    dx *= resultCanvas.clientWidth;
+    dy *= resultCanvas.clientHeight;
+  }
+  return [dx, dy];
 }
 
 const previewArea = $("preview-area");
@@ -778,8 +848,13 @@ function beginPreviewPinch(touches) {
 previewArea.addEventListener("wheel", e => {
   if (currentStep !== 3 || !resultImg) return;
   e.preventDefault();
-  const [mx, my] = resultCanvasPos(e);
-  setViewZoomAt(mx, my, viewZoom * (e.deltaY > 0 ? 0.9 : 1.1));
+  if (e.ctrlKey || e.metaKey) {
+    const [mx, my] = resultCanvasPos(e);
+    setViewZoomAt(mx, my, viewZoom * (e.deltaY > 0 ? 0.9 : 1.1));
+    return;
+  }
+  const [dx, dy] = wheelDeltaPx(e);
+  panViewBy(dx, dy);
 }, { passive: false });
 
 resultCanvas.addEventListener("mousedown", e => {
@@ -849,6 +924,17 @@ previewArea.addEventListener("touchcancel", () => {
   viewPanStart = null;
   resultCanvas.classList.remove("panning");
 });
+
+new ResizeObserver(() => {
+  if (currentStep !== 3 || !resultImg) return;
+  if (!syncPreviewCanvasSize()) return;
+  const minZ = getViewZoomMin();
+  if (viewZoom < minZ) {
+    viewZoom = minZ;
+    centerView();
+  }
+  drawResult();
+}).observe(previewArea);
 
 let filters = [];
 let filterIdSeq = 0;
@@ -1268,21 +1354,18 @@ async function doProcess() {
     if (gen !== processGen) return;
     if (data.type === "cancelled") return;
 
-    const oldW = resultCanvas.width;
-    const oldH = resultCanvas.height;
+    const hadPreview = !!resultImg;
     if (resultImg && resultImg.close) resultImg.close();
     resultImg = data.preview;
-    resultCanvas.width = data.width;
-    resultCanvas.height = data.height;
-    if (oldW && oldH) {
-      viewPanX *= data.width / oldW;
-      viewPanY *= data.height / oldH;
-    }
-    drawResult();
-    const mode = $("preview-mode").value;
-    const modeLabel = mode === "full" ? "full" : mode === "fast" ? "fast" : "";
-    $("preview-status").textContent =
-      `Preview${modeLabel ? ` (${modeLabel})` : ""}: ${data.width} × ${data.height} px · ${Math.round(viewZoom * 100)}%`;
+    requestAnimationFrame(() => {
+      if (gen !== processGen) return;
+      if (!hadPreview) resetPreviewView();
+      drawResult();
+      const mode = $("preview-mode").value;
+      const modeLabel = mode === "full" ? "full" : mode === "fast" ? "fast" : "";
+      $("preview-status").textContent =
+        `Preview${modeLabel ? ` (${modeLabel})` : ""}: ${data.width} × ${data.height} px · ${previewZoomPct()}%`;
+    });
   } catch (e) {
     if (gen !== processGen) {
       procLogError("doProcess stale generation", { gen, current: processGen });
